@@ -1,0 +1,27 @@
+setup lacie
+
+ hostname: kish
+ ip addr: dhcp (192.168.0.176)
+ admin user: admin
+ admin password: (see accounts)
+ protocols: afs, smb, http, ftp 
+ protocols enabled: smb
+ workgroup: kheb
+ time synchronization: ntp
+ time server: eana
+ users: admin, eana, nipour, ur, uruk
+ shares: root (entire disk)
+ specific shares: one per machine on kheb network
+
+backup strategy:
+
+ smbfs mounted big sparse file loop mounted with encryption
+
+2009-01-20:
+
+rsync -ravi --exclude-from=EXCLUDES aegis archeo cvs mail michel mysql pak svn trac www /backup/bsf/eana/wk/eana_wk
+...
+sent 4811968330 bytes  received 425556 bytes  5843829.86 bytes/sec
+total size is 4809859339  speedup is 1.00
+
+WARNING: mouse latency->kernel latency->ltrace...

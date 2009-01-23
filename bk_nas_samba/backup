@@ -1,0 +1,169 @@
+#!/bin/sh
+# -*- Mode: shell; tab-width: 4; indent-tabs-mode: t; -*-
+#
+# Modified: Wed Jan 21 03:07:50 2009
+#
+# Doc...
+#
+
+set -e
+
+# Constants
+true=0 # shell defaults to opposite
+false=1
+
+# Task (main operation)
+A=eana
+B=wk
+C="aegis archeo cvs mail michel mysql pak svn trac www"
+task=${A}_${B}
+
+# Log
+d=$(date "+%F_%T")
+log=/var/log/rsync_${task}_${d}.log
+errlog=${log%.log}.err
+
+# Operation variables (depends on task)
+fs_type=ext2
+mount_options_bsf=""
+remote_fs="//kish/${A}"
+remote_user=${A}
+mount_options_nas="-t smbfs -o lfs,username=${remote_user}"
+mount_point_nas="/backup/nas/${A}/${B}"
+big_sparse_file="$mount_point_nas/backup.$fs_type"
+mount_point_bsf="/backup/bsf/${A}/${B}"
+options="-ravi"
+exclude="--exclude-from=EXCLUDES"
+source=${C}
+info="$mount_point_bsf/README"
+dest="$mount_point_bsf/$task"
+
+# Variable variables
+loop_dev=/dev/loop0 # default
+mount_point_test_service=
+mount_point_test_type=
+
+log() {
+	echo "$*"
+}
+
+fatal() {
+	echo "$*" >&2
+	exit 1
+}
+
+do_real_backup() {
+    rsync $options \
+		$exclude \
+		$source \
+		$dest >$log 2>$errlog
+    return $?
+}
+
+launch_backup() {
+	# pre-backup tasks (ex: lock databases)
+	do_real_backup
+	# post-backup tasks (ex: unlock databases)
+}
+
+get_nas_mount_info() {
+	# small trick to parse two variables in awk back into the shell
+	t=$(df -T $mount_point_nas | sed -e 1d | \
+		awk '{ 
+print "mount_point_test_service="$1"\nmount_point_test_type="$2 
+}')
+	eval $t
+}
+
+is_nas_mounted() {
+	# is this a remote filesystem
+	case $mount_point_test_type in
+		smbfs|cifs) return $true ;;
+		*) return $false ;;
+	esac
+}
+
+is_nas_service_ok() {
+	case $mount_point_test_service in
+		$remote_fs) return $true ;; # NAS is mounted and ok
+		*) return $false ;;
+	esac
+}
+
+mount_nas() {
+    mkdir -p $mount_point_nas
+    mount $mount_options_nas \
+		$remote_fs \
+		$mount_point_nas
+    return $?
+}
+
+mount_bsf() {
+    mkdir -p $mount_point_bsf
+    mount $mount_options_bsf \
+		$loop_dev \
+		$mount_point_bsf
+}
+
+create_big_sparse() {
+    dd if=/dev/zero of=$big_sparse_file bs=1M count=1 seek=150000
+}
+
+create_backup_filesystem() {
+    mkfs.$fs_type $loop_dev
+}
+
+setup_loop_device() {
+    loop_dev=$(losetup -f) # find first unused loop device
+    losetup $loop_dev $big_sparse_file
+}
+
+log "Test NAS mount point..."
+if [ ! -d $mount_point_nas ] ; then
+	fatal "NAS mount point must be created first ($mount_point_nas)"
+fi
+get_nas_mount_info
+echo "mount_point_test_type = $mount_point_test_type"
+if is_nas_mounted ; then
+	fatal "NAS already mounted"
+fi
+
+echo "Mount NAS share..."
+mount_nas
+get_nas_mount_info
+log "NAS service = $mount_point_test_service"
+if ! is_nas_service_ok ; then
+	fatal "NAS is not the service expected"
+fi
+log "NAS ok."
+
+log "Setup loop device"
+setup_loop_device
+log "Loop device in use = $loop_dev"
+
+log "Test big sparse file on NAS..."
+if [ -f $big_sparse_file ] ; then
+	log "Do not create big sparse file, ok."
+else
+	log "Create big sparse file on NAS share..."
+	echo create_big_sparse
+fi
+
+log "Test filesystem in big sparse file..."
+if /bin/true ; then
+	log "Do not create filesystem in big sparse file, ok."
+else
+	log "Create filesystem in this file..."
+	echo create_backup_filesystem
+fi
+
+log "Mount this filesystem..."
+mount_bsf
+
+log "Launch backup..."
+launch_backup
+
+# Cleanup:
+#  umount loop device (bsf mount point)
+#  release loop device (losetup -d $loop_dev)
+#  umount NAS
