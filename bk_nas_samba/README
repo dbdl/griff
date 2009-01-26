@@ -1,0 +1,4 @@
+BK_NAS_SAMBA
+
+This program is written in BASH. Its purpose is to backup
+Linux production data on a SAMBA accessible NAS.

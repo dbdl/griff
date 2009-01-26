@@ -1,0 +1,26 @@
+* Mandatory TODO:
+
+** Command line options
+
+backup:
+- select task
+
+backup:
+- select task
+
+** GUI
+
+(text / ncurses / zenity)
+
+- display tasks
+
+backup:
+- select task
+
+restore:
+- select task
+
+* Features
+
+- statistics (bandwidth, storage, load, ...)
+

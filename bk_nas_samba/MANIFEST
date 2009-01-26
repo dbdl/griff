@@ -1,0 +1,8 @@
+# (@) BK_NAS_SAMBA (@)
+#
+# Modified: 
+#
+# This filesystem is created & accessed
+# only by the bk_nas_samba script through
+# the loop device on Linux.
+#
