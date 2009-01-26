@@ -13,7 +13,7 @@ setup lacie
  shares: root (entire disk)
  specific shares: one per machine on kheb network
 
-backup strategy:
+backup strategy 1:
 
  smbfs mounted big sparse file loop mounted with encryption
 
@@ -25,3 +25,36 @@ sent 4811968330 bytes  received 425556 bytes  5843829.86 bytes/sec
 total size is 4809859339  speedup is 1.00
 
 WARNING: mouse latency->kernel latency->ltrace...
+
+backup strategy 2:
+
+ smbfs mounted git repository
+
+Test with my games:
+
+//kish/fumee /backup/nas/fumee cifs rw,mand,unc=\\kish\fumee,username=fumee,uid=1000,posixpaths,acl,rsize=16384,wsize=57344 0 0
+
+git --git-dir /backup/nas/fumee/git.r/enemy-territory --work-tree enemy-territory init
+
+git --git-dir /backup/nas/fumee/git.r/enemy-territory --work-tree enemy-territory add -nv .
+
+check that with status
+commit
+
+dup -> basic test case for fumme
+
+cd fumee-dl
+git clone /backup/nas/fumee/git.r/enemy-territory
+du -sh => 536M
+git repack
+du -sh => 794M !!!
+
+git-prune-packed
+du -sh => 534M
+du -sh .git => 259M
+
+git-ls-files
+git-show-index < <idx>
+git-verify-pack [-v]
+git-archive ... cool :)
+git-archive --format=zip -v HEAD >/tmp/toto.zip
