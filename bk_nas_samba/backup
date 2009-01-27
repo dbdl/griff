@@ -1,9 +1,9 @@
 #!/bin/bash
 # -*- Mode: shell; tab-width: 4; indent-tabs-mode: t; -*-
 #
-# Modified: Mon Jan 26 19:20:12 2009
+# Modified: Tue Jan 27 01:42:25 2009
 #
-# Doc...
+# Backup script. See README.
 #
 
 set -e
@@ -21,8 +21,11 @@ A=eana
 B=wk
 C="aegis archeo cvs mail michel mysql pak svn trac www"
 task=${A}_${B}
-task_list=
+task_list=$myres/${task}.list
+pre_backup_tasks=
 post_backup_tasks=bkn_preserve_backup
+current_backup_dir=
+current_backup_date=
 
 # Log
 d=$(date "+%F_%T")
@@ -36,9 +39,11 @@ fs_type=ext2
 mount_options_bsf=""
 remote_fs="//kish/${A}"
 remote_user=${A}
-mount_options_nas="-t smbfs -o lfs,username=${remote_user}"
+nas_creds=$myres/nas_creds.${A}
+mount_options_nas="-t smbfs -o lfs,username=${remote_user},credentials=$nas_creds"
 mount_point_nas="/backup/nas/${A}/${B}"
 big_sparse_file="$mount_point_nas/backup.$fs_type"
+bsf_just_created=$false
 mount_point_bsf="/backup/bsf/${A}/${B}"
 options="-ravi"
 exclude="--exclude-from=EXCLUDES"
@@ -68,10 +73,27 @@ bkn_fatal() {
 	exit 1
 }
 
+bkn_check_myres() {
+	if [ ! -d "$myres" ] ; then
+		bkn_fatal "Variable myres is set to: $myres. This directory does not exists. Please change myres."
+	fi
+	if [ ! -f "$myres/nas_creds.${A}" ] ; then
+		bkn_fatal "You must create a NAS credentials file: $myres/nas_creds.${A}"
+	fi
+	if [ ! -f "$myres/${task}.list" ] ; then
+		bkn_fatal "$myres/${task}.list does not exists: please create it."
+	fi
+}
+
+bkn_write_index_line() {
+	# args required: dir name date size sizeeff
+	echo "$1;$2;$3;$4;$5" >> "$mount_point_bsf/INDEX"
+}
+
 bkn_do_real_backup() {
-	set -x
+	#set -x
 	(
-		set -x
+		#set -x
 		if [ -n "$task_list" ] ; then
 			src=$task_list
 		else
@@ -92,13 +114,24 @@ bkn_do_real_backup() {
 }
 
 bkn_launch_backup() {
+	bkn_log "Launching backup..."
+	for i in $pre_backup_tasks ; do
+		bkn_log "Launching pre-backup task: $i..."
+		$i >>$log 2>>$errlog
+	done
 	# pre-backup tasks (ex: lock databases)
+	bkn_log "Real backup starting..."
 	bkn_do_real_backup
 	# post-backup tasks (ex: unlock databases)
 	for i in $post_backup_tasks ; do
 		bkn_log "Launching post-backup task: $i..."
 		$i >>$log 2>>$errlog
 	done
+	bkn_log "Computing backup size..."
+	size=$(du -s -b $dest)
+	sizeeff=0
+	bkn_log "Writting INDEX entry..."
+	bkn_write_index_line $current_backup_dir $task $current_backup_date $size $sizeeff
 	bkn_log "Finished backup."
 	return $true
 }
@@ -227,9 +260,10 @@ bkn_verify_task_list() {
 }
 
 bkn_preserve_backup() {
-	d=$(date "+%F_%T")
-	bkn_log "Creating snapshot: $d..."
-	cp -al "$mount_point_bsf/backup" "$mount_point_bsf/backup.${d}"
+	current_backup_date=$(date "+%F_%T")
+	current_backup_dir=backup.${current_backup_date}
+	bkn_log "Creating snapshot: $current_backup_date..."
+	cp -al "$mount_point_bsf/backup" "$mount_point_bsf/$current_backup_dir"
 }
 
 bkn_debug_shell() {
@@ -253,6 +287,10 @@ bkn_debug_shell() {
 
 bkn_setup() {
 
+	bkn_log "Verify myres ($myres)..."
+
+	bkn_check_myres
+
 	bkn_log "Verify task list ($task)..."
 
 	bkn_verify_task_list
@@ -273,7 +311,7 @@ bkn_setup() {
 	
 	bkn_log "Mount NAS share..."
 	
-	bkn_mount_nas
+	bkn_mount_nas || bkn_fatal "Failed to mount NAS"
 	
 	bkn_get_nas_mount_info
 	
@@ -285,43 +323,42 @@ bkn_setup() {
 	
 	bkn_log "NAS ok."
 	
-	bkn_log "Setup loop device"
-	
-	bkn_setup_loop_device
-	
-	bkn_log "Loop device in use = $loop_dev"
-	
 	bkn_log "Test big sparse file on NAS..."
 	
 	if [ -f $big_sparse_file ] ; then
 		bkn_log "Do not create big sparse file, ok."
 	else
 		bkn_log "Create big sparse file on NAS share..."
-		bkn_log bkn_create_big_sparse
+		bkn_create_big_sparse || bkn_fatal "Failed to create BSF"
+		bsf_just_created=$true
 	fi
+
+	bkn_log "Setup loop device"
 	
+	bkn_setup_loop_device || bkn_fatal "Failed to setup loop device"
+	
+	bkn_log "Loop device in use = $loop_dev"
+
 	bkn_log "Test filesystem in big sparse file..."
 
-	bkn_check_bsf_is_backup_filesystem
-
-	if /bin/true ; then
-		bkn_log "Do not create filesystem in big sparse file, ok."
-	else
+	if [ $bsf_just_created -eq $true ] ; then
 		bkn_log "Create filesystem in this file..."
-		bkn_log bkn_create_backup_filesystem
+		bkn_create_backup_filesystem || bkn_fatal "Failed to create FS in BSF"
+	else
+		bkn_log "Do not create filesystem in big sparse file, ok."		
 	fi
-	
+
+	bkn_check_bsf_is_backup_filesystem || bkn_fatal "BSF is invalid"
+
 	bkn_log "Mount this filesystem..."
 	
-	bkn_mount_bsf
+	bkn_mount_bsf || bkn_fatal "Failed to mount BSF"
 	
 	bkn_check_backup_filesystem
 
 }
 
 bkn_backup() {
-
-	bkn_log "Launch backup..."
 
 	bkn_launch_backup
 
@@ -342,6 +379,39 @@ bkn_release() {
 
 }
 
+#################
+# GUI functions #
+#################
+
+# simple text gui:
+#   echo menu, read menu input
+# advanced text gui: ncurses
+# gui: zenity
+
+bkn_list_backups() {
+	bkn_log "EXPERIMENTAL FUNCTION"
+	cd "$mount_point_bsf"
+	l=$(\ls -1d backup.*)
+	for i in $l; do
+		t=$(grep ^$i INDEX)
+		if [ $? -ne 0 ] ; then
+			bkn_warn "malformed INDEX line for $i"
+			continue
+		fi
+		t=$(grep ^$i INDEX | awk -F\; '{print "dir="$1"\nname="$2"\ndate="$3"\nsize="$4"\nsizeeff="$5 }')
+# 		bkn_log "t=$t"
+		eval $t
+		echo
+		echo "dir     = $dir"
+		echo "name    = $name"
+		echo "date    = $date"
+		echo "size    = $size"
+		echo "sizeeff = $sizeeff"
+		echo
+	done
+	cd ->/dev/null
+}
+
 ####################
 # Main entry point #
 ####################
@@ -352,14 +422,19 @@ case "$1" in
 		exit 0
 		;;
 	debug)
-		set +e
+		# Trap functions very well, we enter debug shell
+		# even if we 'exit' through bkn_fatal
+		# but still we miss the bkn_release because
+		# when the debug shell finishes, shell actually exits
+		trap bkn_debug_shell EXIT
 		bkn_setup
 		bkn_debug_shell
+		echo "FIN"
 		bkn_release
 		exit 0
 		;;
 	backup_and_debug)
-		set +e
+		trap bkn_debug_shell EXIT
 		bkn_setup
 		bkn_backup
 		bkn_debug_shell

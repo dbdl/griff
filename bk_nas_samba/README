@@ -2,3 +2,33 @@ BK_NAS_SAMBA
 
 This program is written in BASH. Its purpose is to backup
 Linux production data on a SAMBA accessible NAS.
+
+Backup in a special filesystem that is mounted over SAMBA.
+
+This filesystem is created & accessed only by the 
+bk_nas_samba script through the loop device on Linux.
+
+Backup are stored in separate directories.
+
+When a new backup occurs, it's separated from previous
+by creating a new directory with the date in its name
+and by copying the tree with hardlinks.
+
+Each backup is referenced in the INDEX file.
+
+name;date;size;sizeeff
+
+name = task name
+date = date in %F %T format
+size = size in bytes
+sizeeff = effective size (counting hardlinks)
+
+Backup period defines the time window between two
+full backups. When the next next full backup occurs
+(i.e.) when there are three full backups, we remove
+the first one.
+
+Backup are created in each period with the same name
+and the date appended.
+
+To be continued.
