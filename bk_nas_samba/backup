@@ -426,6 +426,7 @@ case "$1" in
 		# even if we 'exit' through bkn_fatal
 		# but still we miss the bkn_release because
 		# when the debug shell finishes, shell actually exits
+		# FIXME: disable trap when entering in debug shell...
 		trap bkn_debug_shell EXIT
 		bkn_setup
 		bkn_debug_shell

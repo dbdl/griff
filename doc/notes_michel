@@ -58,3 +58,28 @@ git-show-index < <idx>
 git-verify-pack [-v]
 git-archive ... cool :)
 git-archive --format=zip -v HEAD >/tmp/toto.zip
+
+Ripped from INDEX:
+
+eana_wk;2009-01-26_18:01:00;0;0
+eana_wk;2009-01-26_19:46:31;0;0
+eana_wk;2009-01-26_19:20:40;0;0
+
+4824294425      backup.2009-01-26_18:01:00
+6363380933      backup.2009-01-26_19:46:31
+6363380933      backup.2009-01-26_19:20:40
+
+du -s -l -b backup
+6363380933      backup
+
+du -s --apparent-size -b .     
+6426648246      .
+
+du -s -b .
+6426648246      .
+
+du -s -l -b .
+23914458201     .
+
+6363380933+6363380933+4824294425
+17551056291

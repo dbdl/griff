@@ -18,6 +18,7 @@ Each backup is referenced in the INDEX file.
 
 name;date;size;sizeeff
 
+dir = backup directory
 name = task name
 date = date in %F %T format
 size = size in bytes
