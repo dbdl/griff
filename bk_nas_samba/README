@@ -3,16 +3,56 @@ BK_NAS_SAMBA
 This program is written in BASH. Its purpose is to backup
 Linux production data on a SAMBA accessible NAS.
 
-Backup in a special filesystem that is mounted over SAMBA.
+== USAGE ==
 
-This filesystem is created & accessed only by the 
+1. Think about your backup strategy
+
+  Identify directories to be captured by the backup
+  process. Define period.
+
+2. Prepare your backup infrastructure
+
+  Create a NAS share. Setup credentials.
+  Create the /backup hierarchy:
+    /backup
+    /backup/nas
+    /backup/bsf
+
+3. Check resource files (configuration) for backup
+
+  Credentials: $myres/nas_creds.${A}
+  Source list: $myres/${task}.list
+
+4. Invoke backup
+
+  In this example, we've choosen
+  backup -A
+
+== SPECS ==
+
+Backup script shall capture a list of directory on the
+local system and copy them identically on the backup
+media.
+
+A full backup is an unconditional backup of everything
+specified in the source list.
+
+An incremental backup shall be performed when needed.
+Looking at the previous full backup, the script shall
+copy only new data to the backup media.
+
+== IMPLEMENTATION ==
+
+Backup uses a special file-system that is mounted over SAMBA.
+
+This file-system is created & accessed only by the 
 bk_nas_samba script through the loop device on Linux.
 
 Backup are stored in separate directories.
 
 When a new backup occurs, it's separated from previous
 by creating a new directory with the date in its name
-and by copying the tree with hardlinks.
+and by copying the tree with hard links.
 
 Each backup is referenced in the INDEX file.
 
@@ -22,7 +62,7 @@ dir = backup directory
 name = task name
 date = date in %F %T format
 size = size in bytes
-sizeeff = effective size (counting hardlinks)
+sizeeff = effective size (counting hard links)
 
 Backup period defines the time window between two
 full backups. When the next next full backup occurs
