@@ -1,7 +1,7 @@
 #!/bin/bash
 # -*- Mode: shell; tab-width: 4; indent-tabs-mode: t; -*-
 #
-# Modified: Thu Jan 29 11:41:43 2009
+# Modified: Sun Feb  1 16:48:58 2009
 #
 # Backup script. See README.
 #
@@ -13,6 +13,7 @@ me=${0##*/}
 # Constants
 true=0 # shell defaults to opposite
 false=1
+operation_modes="shell|debug|backup_and_debug"
 # Upon script installation, this will be set up as ${datadir}
 myres="/home/michel/Desktop/Sauvegardes/bk_nas_samba"
 
@@ -21,9 +22,11 @@ A=eana
 B=wk
 C="aegis archeo cvs mail michel mysql pak svn trac www"
 task=${A}_${B}
-task_list=$myres/${task}.list
+task_list=$myres/task_${task}.list
+task_list_parsed=
+backup_method=rsync
 pre_backup_tasks=
-post_backup_tasks=bkn_preserve_backup
+post_backup_tasks=
 current_backup_dir=
 current_backup_date=
 
@@ -31,11 +34,11 @@ current_backup_date=
 logdate=$(date "+%F_%T")
 log=/var/log/$me_${task}_${logdate}.log
 errlog=${log%.log}.err
-rsy_log=/var/log/rsync_${task}_${logdate}.log
+rsy_log=/var/log/${backup_method}_${task}_${logdate}.log
 rsy_errlog=${rsy_log%.log}.err
 
 # Operation variables (depends on task)
-fs_type=ext2
+fs_type=ext3
 mount_options_bsf=""
 nas="//kish"
 remote_fs="${nas}/${A}"
@@ -50,14 +53,15 @@ options="-ravi"
 exclude="--exclude-from=EXCLUDES"
 source=${C}
 info="$mount_point_bsf/README"
-dest="$mount_point_bsf/backup"
+backup_dir=backup
+dest="$mount_point_bsf/$backup_dir"
 
 bkn_update_vars() {
 	task=${A}_${B}
-	task_list=$myres/${task}.list
+	task_list=$myres/task_${task}.list
 	log=/var/log/$me_${task}_${logdate}.log
 	errlog=${log%.log}.err
-	rsy_log=/var/log/rsync_${task}_${logdate}.log
+	rsy_log=/var/log/${backup_method}_${task}_${logdate}.log
 	rsy_errlog=${rsy_log%.log}.err
 	remote_fs="${nas}/${A}"
 	remote_user=${A}
@@ -68,13 +72,14 @@ bkn_update_vars() {
 	mount_point_bsf="/backup/bsf/${A}/${B}"
 	source=${C}
 	info="$mount_point_bsf/README"
-	dest="$mount_point_bsf/backup"
+	dest="$mount_point_bsf/$backup_dir"
 }
 
 # Variable variables
 loop_dev=/dev/loop0 # default
 mount_point_test_service=
 mount_point_test_type=
+last_backup_dir=
 
 bkn_log() {
 	echo "$*"
@@ -91,17 +96,27 @@ bkn_error() {
 bkn_fatal() {
 	echo "$*" >&2
 	exit 1
+#   Trap ERR not working at the moment...
+# 	return $false # with set -e this will trigger ERR signal
+}
+
+bkn_ERR() {
+	read -t 3 -p "ERROR trapped, continue ? [y/N]" -n 1 $r
+	case $r in
+		y|Y) return $true ;;
+		*) exit
+	esac
 }
 
 bkn_check_myres() {
 	if [ ! -d "$myres" ] ; then
-		bkn_fatal "Variable myres is set to: $myres. This directory does not exists. Please change myres."
+		bkn_fatal "Variable myres is set to: $myres. This directory does not exists. Please setup myres correctly."
 	fi
 	if [ ! -f "$myres/nas_creds.${A}" ] ; then
-		bkn_fatal "You must create a NAS credentials file: $myres/nas_creds.${A}"
+		bkn_fatal "NAS credentials file not found. You must create a NAS credentials file: $myres/nas_creds.${A}"
 	fi
-	if [ ! -f "$myres/${task}.list" ] ; then
-		bkn_fatal "$myres/${task}.list does not exists: please create it."
+	if [ ! -f "$task_list" ] ; then
+		bkn_fatal "Task list not found. You must create a task list: $task_list"
 	fi
 }
 
@@ -110,49 +125,129 @@ bkn_write_index_line() {
 	echo "$1;$2;$3;$4;$5" >> "$mount_point_bsf/INDEX"
 }
 
-bkn_do_real_backup() {
+bkn_current_backup_status() {
+	bkn_log \
+"task           : ${task:-<undefined>}
+backup dir     : ${current_backup_dir:-<undefined>}
+backup date    : ${current_backup_date:-<undefined>}
+size           : ${size:-<undefined>}
+effective size : ${sizeeff:-<undefined>}"
+}
+
+bkn_get_last_backup_dir() {
+	bkn_log "Searching for last backup dir..."
+	if [ -f "$mount_point_bsf/INDEX" ] ; then
+		i=$(tail -1 "$mount_point_bsf/INDEX"|awk -F\; '{print $1}')
+	else
+		bkn_log "INDEX not found"
+	fi
+	if [ ! -z "$i" ] && [ -d "$mount_point_bsf/$i" ] ; then
+		last_backup_dir=${i##*/}
+		return $true
+	else
+		bkn_log "Last backup dir not found in INDEX, trying ls..."
+		l=$(ls -1trd "$mount_point_bsf" | tail -1)
+		if [ ! -z "$l" ] && [ -d "$l" ] ; then
+			# test if it is not the .
+			r_parent=$(realpath $mount_point_bsf)
+			r_l=$(realpath $l)
+			if [ $r_parent != $r_l ] ; then
+				bkn_log "Found: $l"
+				last_backup_dir=${l##*/}
+				return $true
+			else
+				bkn_log "Not found (directory empty)"
+				return $false
+			fi
+		else
+			bkn_error "Not found (ls error)"
+			return $false
+		fi
+	fi
+	bkn_fatal "Should not happen"
+}
+
+bkn_do_real_rsync_backup() {
 	# The ( rsync ) construct seems to behave strangely
 	# with the trap EXIT trick... I remove it temporarely.
 
-	if [ -n "$task_list" ] ; then
-		src=$task_list
+	if [ -n "$task_list_parsed" ] ; then
+		src=$task_list_parsed
 	else
 		src=$source
 	fi
 	bkn_log "Source list: $src"
 
-	if [ ! -d "$dest" ] ; then
-		bkn_log "Creating destination directory: $dest"
-		mkdir -p "$dest"
+	if [ -f EXCLUDES ] ; then
+		ex=$exclude
+	else
+		ex=
 	fi
 
+	bkn_log "Real rsync: rsync $options $ex $src $dest"
 	rsync $options \
-		$exclude \
+		$ex \
 		$src \
 		$dest >$rsy_log 2>$rsy_errlog || bkn_error "rsync error"
 
 	# We've lost $? so don't bother return it...
 }
 
+bkn_preserve_backup() {
+	# args: current next
+	curr=$1
+	next=$2
+	bkn_log "Creating snapshot: $mount_point_bsf/$curr - $mount_point_bsf/$next ..."
+	cp -al "$mount_point_bsf/$curr" "$mount_point_bsf/$next"
+	return $?
+}
+
+bkn_setup_rsync_dest() {
+	bkn_log "Prepare delta (snapshot)..."
+	current_backup_date=$(date "+%F_%T")
+	if bkn_get_last_backup_dir ; then
+		# snapshot
+		current_backup_dir=$last_backup_dir
+		next_backup_dir=${backup_dir}.${current_backup_date}
+		bkn_preserve_backup $current_backup_dir $next_backup_dir
+		bkn_log "Delta finished."
+		current_backup_dir=$next_backup_dir
+	else
+		# full
+		bkn_log "Last backup dir not found, creating a new full backup."
+		current_backup_dir=${backup_dir}.${current_backup_date}
+	fi
+	dest="$mount_point_bsf/$current_backup_dir"
+	mkdir -p "$dest"
+	bkn_log "Backup dir is now: $dest"
+}
+
 bkn_launch_backup() {
-	bkn_log "Launching backup..."
+	bkn_log "Launching backup..." # pre-backup tasks (ex: lock databases)
 	for i in $pre_backup_tasks ; do
 		bkn_log "Launching pre-backup task: $i..."
 		$i >>$log 2>>$errlog
 	done
-	# pre-backup tasks (ex: lock databases)
 	bkn_log "Real backup starting..."
-	bkn_do_real_backup
+	case $backup_method in
+		rsync) # rsync needs a target directory
+			bkn_setup_rsync_dest
+			bkn_do_real_rsync_backup
+			bkn_log "Computing backup size..."
+			size=$(du -s -b $dest|awk '{print $1}')
+			sizeeff=0 # FIXME: don't known how to compute this...
+			bkn_log "Writting INDEX entry..."
+			bkn_current_backup_status # log current status
+			bkn_write_index_line $current_backup_dir $task $current_backup_date $size $sizeeff
+			;;
+		git) # git needs a repository
+			;;
+	esac
 	# post-backup tasks (ex: unlock databases)
 	for i in $post_backup_tasks ; do
 		bkn_log "Launching post-backup task: $i..."
 		$i >>$log 2>>$errlog
 	done
-	bkn_log "Computing backup size..."
-	size=$(du -s -b $dest)
-	sizeeff=0
-	bkn_log "Writting INDEX entry..."
-	bkn_write_index_line $current_backup_dir $task $current_backup_date $size $sizeeff
 	bkn_log "Finished backup."
 	return $true
 }
@@ -163,7 +258,7 @@ bkn_get_nas_mount_info() {
 		awk '{ 
 print "mount_point_test_service="$1"\nmount_point_test_type="$2 
 }')
-	bkn_log "t=$t"
+# 	bkn_log "t=$t"
 	eval $t
 	return $?
 }
@@ -261,7 +356,7 @@ bkn_release_loop_device() {
 }
 
 bkn_verify_task_list() {
-	t=task_${A}_${B}
+	t=$task_list
 	if [ -f "$t" ] ; then
 		tf=$(mktemp)
 		cat "$t" | while read l ; do
@@ -271,38 +366,31 @@ bkn_verify_task_list() {
 				echo "$l: not a valid directory" >> $errlog
 			fi
 		done
-		task_list=$(cat $tf|xargs)
+		task_list_parsed=$(cat $tf|xargs)
 		rm -f $tf
 		return $true
 	else
-		echo "ERROR: Task list not found." >> $errlog
-		return $false
+		bkn_fatal "Task list not found: $t."
 	fi
 }
 
-bkn_preserve_backup() {
-	current_backup_date=$(date "+%F_%T")
-	current_backup_dir=backup.${current_backup_date}
-	bkn_log "Creating snapshot: $current_backup_date..."
-	cp -al "$mount_point_bsf/backup" "$mount_point_bsf/$current_backup_dir"
-}
-
 bkn_debug_shell() {
-	prompt_colour="\[\033[0;31m\]"
-	no_colour="\[\033[0m\]"
-	case $TERM in
-		xterm*|gnome*|konsole*)
-			long_title='\u@\h - ${me} shell'
-			short_title='\W'
-			titlebar="\[\033]0;$short_title\007\033]2;$long_title\007\]"
-			;;
-		*)
-			titlebar="${me} shell"
-			;;
-	esac
-	export PS1="${titlebar}${prompt_colour}${me} shell > $no_colour"
-	export PS2='>> '
-	$SHELL --norc
+# 	trap 'echo "EXIT disabled, hit C-c to exit."' EXIT
+# 	prompt_colour="\[\033[0;31m\]"
+# 	no_colour="\[\033[0m\]"
+# 	case $TERM in
+# 		xterm*|gnome*|konsole*)
+# 			long_title='\u@\h - ${me} shell'
+# 			short_title='\W'
+# 			titlebar="\[\033]0;$short_title\007\033]2;$long_title\007\]"
+# 			;;
+# 		*)
+# 			titlebar="${me} shell"
+# 			;;
+# 	esac
+# 	export PS1="${titlebar}${prompt_colour}${me} shell > $no_colour"
+# 	export PS2='>> '
+	$SHELL --rcfile $myres/bashrc
 }
 
 bkn_setup() {
@@ -323,7 +411,7 @@ bkn_setup() {
 	
 	bkn_get_nas_mount_info
 	
-	bkn_log "mount_point_test_type = $mount_point_test_type"
+	bkn_log "Current mount point FS type: $mount_point_test_type"
 	
 	if bkn_is_nas_mounted ; then
 		bkn_fatal "NAS already mounted"
@@ -335,7 +423,7 @@ bkn_setup() {
 	
 	bkn_get_nas_mount_info
 	
-	bkn_log "NAS service = $mount_point_test_service"
+	bkn_log "Current NAS service: $mount_point_test_service"
 	
 	if ! bkn_is_nas_service_ok ; then
 		bkn_fatal "NAS is not the service expected"
@@ -437,19 +525,21 @@ bkn_list_backups() {
 ####################
 
 # Command line options & arguments
-myoptions="d:A:B:C:N:"
+myoptions="hd:A:B:C:N:"
 # Options explained:
 usage() {
 	echo "usage: $me [options]"
 	echo
 	echo "options:"
 	echo
-	echo -e "\t d\t debug mode"
+	echo -e "  h       this help"
 	echo
-	echo -e "\t A\t task A part (name)"
-	echo -e "\t B\t task B part (sub-name)"
-	echo -e "\t C\t task C part (sources)"
-	echo -e "\t N\t NAS hostname"
+	echo -e "  d<mode> operation mode: $operation_modes"
+	echo
+	echo -e "  A       task A part (name)"
+	echo -e "  B       task B part (sub-name)"
+	echo -e "  C       task C part (sources)"
+	echo -e "  N       NAS hostname"
 	echo
 	exit 0
 }
@@ -460,12 +550,15 @@ usage() {
 while getopts $myoptions o
 do
   case $o in
+	  h )
+		  usage
+		  ;;
 	  d ) [ -z "$OPTARG" ] && usage
 		  d=$OPTARG
 		  case $d in
-			  shell|debug|backup_and_debug)
+ 			  shell|debug|backup_and_debug) # how to test $d in $operation_modes??
 				  mode=$d ;;
-			  *) bkn_error "invalid mode: $d"
+			  *) bkn_error "invalid mode: $d, operation modes are: $operation_modes"
 				  usage ;;
 		  esac
 		  ;;
@@ -511,6 +604,8 @@ case "$mode" in
 		# when the debug shell finishes, shell actually exits
 		# FIXME: disable trap when entering in debug shell...
 		trap bkn_debug_shell EXIT
+		# Trap ERR not working at the moment
+		# trap bkn_ERR ERR
 		bkn_setup
 		bkn_debug_shell
 		echo "FIN"

@@ -4,4 +4,5 @@
 # - MANIFEST : this file
 # - README : some documentation
 # - backup.* : backup directories
+# - INDEX : list all backups
 #
