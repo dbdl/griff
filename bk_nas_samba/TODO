@@ -24,3 +24,12 @@ restore:
 
 - statistics (bandwidth, storage, load, ...)
 
+  * Disk usage for one full backup
+
+	Basic idea: du -sb
+
+	Implementation: size=$(du -s -b $dest|awk '{print $1}')
+
+  * Disk usage for one delta backup
+
+	Basic idea: find -ls|awk
