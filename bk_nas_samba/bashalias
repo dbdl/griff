@@ -1,0 +1,38 @@
+# -*- Mode: sh; tab-width: 4; indent-tabs-mode: t; -*-
+#
+# Modified: Sat May 16 13:15:29 2009
+#
+# Backup shell aliases
+#
+
+alias ..='cd ..'
+
+alias ls='ls --color'
+alias l='ls -l'
+alias ll=l
+alias la='ls -a'
+alias lla='ls -al'
+alias ltr='ls -ltr'
+
+alias H='history|tail'
+
+alias cp='cp -i'
+alias mv='mv -i'
+alias rm='rm -i'
+alias vlm='tail -f /var/log/messages'
+alias eD='export DISPLAY=:0'
+
+function psp() {
+  ps -C "$1" fu
+}
+export -f psp
+
+function lddp() {
+  ldd $(type -p "$1")
+}
+export -f lddp
+
+alias dbc='. /etc/bash_completion'
+
+alias help='declare -f | grep ^bkn'
+

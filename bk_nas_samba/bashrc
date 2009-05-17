@@ -1,0 +1,31 @@
+# -*- Mode: sh; tab-width: 4; indent-tabs-mode: t; -*-
+#
+# Modified: Sun Feb  1 14:05:56 2009
+#
+# Backup shell rc file
+#
+
+prompt_colour="\[\033[0;31m\]"
+no_colour="\[\033[0m\]"
+case $TERM in
+	xterm*|gnome*|konsole*)
+		long_title='\u@\h - ${me} shell'
+		short_title='\W'
+		titlebar="\[\033]0;$short_title\007\033]2;$long_title\007\]"
+		;;
+	*)
+		titlebar="${me} shell"
+		;;
+esac
+export PS1="${titlebar}${prompt_colour}${me} shell > $no_colour"
+export PS2='>> '
+. $myres/bashalias
+
+# Trap ERR not working at the moment 
+# echo "Disabling EXIT signal"
+# trap '' EXIT
+# signal_ERR() {
+# 	echo "EXIT disabled, hit C-c to exit."
+# }
+# #trap signal_ERR ERR
+# trap bkn_ERR ERR

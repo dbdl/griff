@@ -1,7 +1,7 @@
 #!/bin/bash
 # -*- Mode: shell; tab-width: 4; indent-tabs-mode: t; -*-
 #
-# Modified: Tue Feb 10 18:30:59 2009
+# Modified: Sun May 17 13:12:50 2009
 #
 # Backup script. See README.
 #
@@ -14,6 +14,7 @@ mydir=${0%/*}
 # Constants
 true=0 # shell defaults to opposite
 false=1
+debug=$false
 operation_modes="shell|debug|backup_and_debug"
 # Upon script installation, this will be set up as ${datadir}
 myres=$(realpath $mydir)
@@ -45,12 +46,15 @@ nas="//kish"
 remote_fs="${nas}/${A}"
 remote_user=${A}
 nas_creds=$myres/nas_creds.${A}
-mount_options_nas="-t smbfs -o lfs,username=${remote_user},credentials=$nas_creds"
+localcharset=iso8859-15
+mount_nas_fstype=cifs
+mount_options_nas="-o forcedirectio,username=${remote_user},credentials=$nas_creds,iocharset=$localcharset"
 mount_point_nas="/backup/nas/${A}/${B}"
 big_sparse_file="$mount_point_nas/backup.$fs_type"
+bsf_size=150000
 bsf_just_created=$false
 mount_point_bsf="/backup/bsf/${A}/${B}"
-options="-ravi"
+rsync_options="-ravi --stats"
 exclude="--exclude-from=EXCLUDES"
 source=${C}
 info="$mount_point_bsf/README"
@@ -67,7 +71,9 @@ bkn_update_vars() {
 	remote_fs="${nas}/${A}"
 	remote_user=${A}
 	nas_creds=$myres/nas_creds.${A}
-	mount_options_nas="-t smbfs -o lfs,username=${remote_user},credentials=$nas_creds"
+	localcharset=iso8859-15
+	mount_nas_fstype=cifs
+	mount_options_nas="-o forcedirectio,username=${remote_user},credentials=$nas_creds,iocharset=$localcharset"
 	mount_point_nas="/backup/nas/${A}/${B}"
 	big_sparse_file="$mount_point_nas/backup.$fs_type"
 	mount_point_bsf="/backup/bsf/${A}/${B}"
@@ -81,7 +87,13 @@ loop_dev=/dev/loop0 # default
 mount_point_test_service=
 mount_point_test_type=
 last_backup_dir=
+data_transfered=
+data_not_transfered=
+size=
+sizeeff=
+sizenot=
 
+# Helper functions
 bkn_log() {
 	echo "$*"
 }
@@ -122,17 +134,21 @@ bkn_check_myres() {
 }
 
 bkn_write_index_line() {
+	i=$mount_point_bsf/INDEX
+	if [ $debug == $true ] ; then echo "Previous INDEX:"; cat "$i"; fi
 	# args required: dir name date size sizeeff
-	echo "$1;$2;$3;$4;$5" >> "$mount_point_bsf/INDEX"
+	echo "$1;$2;$3;$4;$5" >> "$i"
+	if [ $debug == $true ] ; then echo "Current INDEX:"; cat "$i"; fi
 }
 
 bkn_current_backup_status() {
 	bkn_log \
-"task           : ${task:-<undefined>}
-backup dir     : ${current_backup_dir:-<undefined>}
-backup date    : ${current_backup_date:-<undefined>}
-size           : ${size:-<undefined>}
-effective size : ${sizeeff:-<undefined>}"
+"task                : ${task:-<undefined>}
+backup dir          : ${current_backup_dir:-<undefined>}
+backup date         : ${current_backup_date:-<undefined>}
+size                : ${size:-<undefined>}
+effective size      : ${sizeeff:-<undefined>}
+data not transfered : ${sizenot:-<undefined>}"
 }
 
 bkn_get_last_backup_dir() {
@@ -186,12 +202,28 @@ bkn_do_real_rsync_backup() {
 	fi
 
 	bkn_log "Real rsync: rsync $options $ex $src $dest"
-	rsync $options \
+	set +e
+	rsync $rsync_options \
 		$ex \
 		$src \
-		$dest >$rsy_log 2>$rsy_errlog || bkn_error "rsync error"
-
-	# We've lost $? so don't bother return it...
+		$dest >$rsy_log 2>$rsy_errlog
+	r=$?
+	set -e
+	case $r in
+		0) # rsync ok
+			bkn_log "rsync finished without error"
+			# Collect statistics
+			data_transfered=$(tail -100 $rsy_log | awk '/Literal data:/ {print $3}')
+			data_not_transfered=$(tail -100 $rsy_log | awk '/Matched data:/ {print $3}')
+			bkn_log "total data transfered: $data_transfered"
+			bkn_log "total data not transfered: $data_not_transfered"
+			;;
+		*) # KO
+			bkn_error "rsync error: $r"
+			data_transfered=0
+			data_not_transfered=0
+			;;
+	esac
 }
 
 bkn_preserve_backup() {
@@ -236,7 +268,8 @@ bkn_launch_backup() {
 			bkn_do_real_rsync_backup
 			bkn_log "Computing backup size..."
 			size=$(du -s -b $dest|awk '{print $1}')
-			sizeeff=0 # FIXME: don't known how to compute this...
+			sizeeff=$data_transfered
+			sizenot=$data_not_transfered
 			bkn_log "Writting INDEX entry..."
 			bkn_current_backup_status # log current status
 			bkn_write_index_line $current_backup_dir $task $current_backup_date $size $sizeeff
@@ -281,7 +314,8 @@ bkn_is_nas_service_ok() {
 
 bkn_mount_nas() {
     mkdir -p $mount_point_nas || return $false
-    mount $mount_options_nas \
+    mount -t $mount_nas_fstype \
+		$mount_options_nas \
 		$remote_fs \
 		$mount_point_nas
     return $?
@@ -293,7 +327,18 @@ bkn_umount_nas() {
 }
 
 bkn_mount_bsf() {
-    mkdir -p $mount_point_bsf || return $false
+    mkdir -p $mount_point_bsf || {
+		bkn_error "Fatal: cannot create mount point: $mount_point_bsf"
+		return $false
+	}
+	# Check filesystem before mounting
+	bkn_log "Check filesystem before mounting it: $big_sparse_file"
+	fsck.$fs_type -n $big_sparse_file >$log 2>$errlog || {
+		bkn_error "Fatal: filesystem check failed."
+		return $false
+	}
+	# Mount filesystem
+	bkn_log "Mount filesystem..."
     mount $mount_options_bsf \
 		$loop_dev \
 		$mount_point_bsf
@@ -301,12 +346,13 @@ bkn_mount_bsf() {
 }
 
 bkn_umount_bsf() {
+	sync
 	umount $mount_point_bsf
 	return $?
 }
 
 bkn_create_big_sparse() {
-    dd if=/dev/zero of=$big_sparse_file bs=1M count=1 seek=150000
+    dd if=/dev/zero of=$big_sparse_file bs=1M count=1 seek=$bsf_size
 	return $?
 }
 
@@ -459,8 +505,6 @@ bkn_setup() {
 
 	bkn_check_bsf_is_backup_filesystem || bkn_fatal "BSF is invalid"
 
-	bkn_log "Mount this filesystem..."
-	
 	bkn_mount_bsf || bkn_fatal "Failed to mount BSF"
 	
 	bkn_check_backup_filesystem
@@ -526,7 +570,7 @@ bkn_list_backups() {
 ####################
 
 # Command line options & arguments
-myoptions="hd:A:B:C:N:"
+myoptions="hdm:A:B:C:N:"
 # Options explained:
 usage() {
 	echo "usage: $me [options]"
@@ -535,7 +579,9 @@ usage() {
 	echo
 	echo -e "  h       this help"
 	echo
-	echo -e "  d<mode> operation mode: $operation_modes"
+	echo -e "  d       debug mode"
+	echo
+	echo -e "  m<mode> operation mode: $operation_modes"
 	echo
 	echo -e "  A       task A part (name)"
 	echo -e "  B       task B part (sub-name)"
@@ -554,7 +600,10 @@ do
 	  h )
 		  usage
 		  ;;
-	  d ) [ -z "$OPTARG" ] && usage
+	  d )
+		  debug=$true
+		  ;;
+	  m ) [ -z "$OPTARG" ] && usage
 		  d=$OPTARG
 		  case $d in
  			  shell|debug|backup_and_debug) # how to test $d in $operation_modes??

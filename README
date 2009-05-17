@@ -1,12 +1,15 @@
-griff_
 
 GIT Configuration Management Tool for Backup & Archiving
 
 Requirements: 
 
-- restore strategy : minimal system (backup files should be accessible
-with a minimal set of tools)
+- minimum tools development, maximum integration of
+  standard components
 
-- backup media : NAS with SAMBA access
+- automatic backup with incremental data transfert
 
-- backup window : minimum one week
+- restore strategy : minimal system (backup files 
+  should be accessible with a minimal set of tools)
+
+- backup media : NAS with SAMBA or NFS access
+
