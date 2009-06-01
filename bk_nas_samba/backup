@@ -1,7 +1,7 @@
 #!/bin/bash
 # -*- Mode: shell; tab-width: 4; indent-tabs-mode: t; -*-
 #
-# Modified: Sun May 17 13:12:50 2009
+# Modified: Mon Jun  1 02:40:33 2009
 #
 # Backup script. See README.
 #
@@ -15,6 +15,11 @@ mydir=${0%/*}
 true=0 # shell defaults to opposite
 false=1
 debug=$false
+verbose=$false
+shopt -s expand_aliases
+alias ifD='[ $debug -eq $true ] && '
+alias ifV='[ $verbose -eq $true ] && '
+
 operation_modes="shell|debug|backup_and_debug"
 # Upon script installation, this will be set up as ${datadir}
 myres=$(realpath $mydir)
@@ -33,27 +38,33 @@ current_backup_dir=
 current_backup_date=
 
 # Log
+logdir=/var/log
 logdate=$(date "+%F_%T")
-log=/var/log/$me_${task}_${logdate}.log
+log=${logdir}/$me_${task}_${logdate}.log
 errlog=${log%.log}.err
-rsy_log=/var/log/${backup_method}_${task}_${logdate}.log
+rsy_log=${logdir}/${backup_method}_${task}_${logdate}.log
 rsy_errlog=${rsy_log%.log}.err
 
+# Backup dir
+backupdir=/backup
+
 # Operation variables (depends on task)
-fs_type=ext3
+fstype=ext3
+netfstype=smbfs
 mount_options_bsf=""
 nas="//kish"
 remote_fs="${nas}/${A}"
 remote_user=${A}
 nas_creds=$myres/nas_creds.${A}
 localcharset=iso8859-15
-mount_nas_fstype=cifs
+ignore_nas_already_mounted=$false
+mount_nas_fstype=$netfstype
 mount_options_nas="-o forcedirectio,username=${remote_user},credentials=$nas_creds,iocharset=$localcharset"
-mount_point_nas="/backup/nas/${A}/${B}"
-big_sparse_file="$mount_point_nas/backup.$fs_type"
-bsf_size=150000
+mount_point_nas="${backupdir}/nas/${A}/${B}"
+big_sparse_file="$mount_point_nas/${B}.$fstype"
+bsf_size=100 # in MB
 bsf_just_created=$false
-mount_point_bsf="/backup/bsf/${A}/${B}"
+mount_point_bsf="${backupdir}/bsf/${A}/${B}"
 rsync_options="-ravi --stats"
 exclude="--exclude-from=EXCLUDES"
 source=${C}
@@ -64,19 +75,21 @@ dest="$mount_point_bsf/$backup_dir"
 bkn_update_vars() {
 	task=${A}_${B}
 	task_list=$myres/task_${task}.list
-	log=/var/log/$me_${task}_${logdate}.log
+
+	log=${logdir}/$me_${task}_${logdate}.log
 	errlog=${log%.log}.err
-	rsy_log=/var/log/${backup_method}_${task}_${logdate}.log
+	rsy_log=${logdir}/${backup_method}_${task}_${logdate}.log
 	rsy_errlog=${rsy_log%.log}.err
+
 	remote_fs="${nas}/${A}"
 	remote_user=${A}
 	nas_creds=$myres/nas_creds.${A}
 	localcharset=iso8859-15
-	mount_nas_fstype=cifs
+	mount_nas_fstype=$netfstype
 	mount_options_nas="-o forcedirectio,username=${remote_user},credentials=$nas_creds,iocharset=$localcharset"
-	mount_point_nas="/backup/nas/${A}/${B}"
-	big_sparse_file="$mount_point_nas/backup.$fs_type"
-	mount_point_bsf="/backup/bsf/${A}/${B}"
+	mount_point_nas="${backupdir}/nas/${A}/${B}"
+	big_sparse_file="$mount_point_nas/${B}.$fstype"
+	mount_point_bsf="${backupdir}/bsf/${A}/${B}"
 	source=${C}
 	info="$mount_point_bsf/README"
 	dest="$mount_point_bsf/$backup_dir"
@@ -92,6 +105,53 @@ data_not_transfered=
 size=
 sizeeff=
 sizenot=
+
+# Requirement
+require() {
+	if which -a $@ >/dev/null 2>&1 ; then
+		return $true
+	else
+		echo "FATAL: commands required: $*" >&2
+		exit 1
+	fi
+}
+
+export PATH=/sbin:/usr/sbin:$PATH
+require losetup xfs_check realpath
+
+# Root helper functions
+bkn_mkfs_helper() {
+	case $UID in
+		0) mkfs "$@"; r=$? ;;
+		*) sudo mkfs "$@"; r=$? ;;
+	esac
+	return $r
+}
+
+bkn_mount_helper() {
+	case $UID in
+		0) mount "$@"; r=$? ;;
+		*) sudo mount "$@"; r=$? ;;
+	esac
+	return $r
+}
+
+bkn_umount_helper() {
+	case $UID in
+		0) umount "$@"; r=$? ;;
+		*) sudo umount "$@"; r=$? ;;
+	esac
+	return $r
+}
+
+bkn_losetup_helper() {
+	case $UID in
+		0) losetup "$@"; r=$? ;;
+		*) sudo losetup "$@"; r=$? ;;
+	esac
+	return $r
+}
+
 
 # Helper functions
 bkn_log() {
@@ -133,12 +193,30 @@ bkn_check_myres() {
 	fi
 }
 
+bkn_check_backupdir() {
+	dirlist=("$backupdir" "$backupdir/nas" "$backupdir/bsf" \
+		     "$mount_point_nas" "$mount_point_bsf" )
+
+	for i in ${dirlist[*]} ; do
+		if [ ! -d "$i" ] ; then
+			mkdir -p "$i" || bkn_fatal "FATAL: Could not create directory: $i"
+		fi
+	done
+}
+
 bkn_write_index_line() {
 	i=$mount_point_bsf/INDEX
-	if [ $debug == $true ] ; then echo "Previous INDEX:"; cat "$i"; fi
+	ifV {
+		if [ -f "$i" ] ; then
+			echo "Previous INDEX:"
+			cat "$i"
+		else
+			echo "No previous INDEX."
+		fi
+	}
 	# args required: dir name date size sizeeff
 	echo "$1;$2;$3;$4;$5" >> "$i"
-	if [ $debug == $true ] ; then echo "Current INDEX:"; cat "$i"; fi
+	ifV { echo "Current INDEX:"; cat "$i"; }
 }
 
 bkn_current_backup_status() {
@@ -201,7 +279,7 @@ bkn_do_real_rsync_backup() {
 		ex=
 	fi
 
-	bkn_log "Real rsync: rsync $options $ex $src $dest"
+	bkn_log "Real rsync: rsync $rsync_options $ex $src $dest"
 	set +e
 	rsync $rsync_options \
 		$ex \
@@ -314,7 +392,7 @@ bkn_is_nas_service_ok() {
 
 bkn_mount_nas() {
     mkdir -p $mount_point_nas || return $false
-    mount -t $mount_nas_fstype \
+	bkn_mount_helper -t $mount_nas_fstype \
 		$mount_options_nas \
 		$remote_fs \
 		$mount_point_nas
@@ -322,7 +400,7 @@ bkn_mount_nas() {
 }
 
 bkn_umount_nas() {
-	umount $mount_point_nas
+	bkn_umount_helper $mount_point_nas
 	return $?
 }
 
@@ -333,13 +411,27 @@ bkn_mount_bsf() {
 	}
 	# Check filesystem before mounting
 	bkn_log "Check filesystem before mounting it: $big_sparse_file"
-	fsck.$fs_type -n $big_sparse_file >$log 2>$errlog || {
+	case $fstype in
+		ext2|ext3) 
+			fsck_options=-n
+			fsck_command="fsck -t $fstype $fsck_options"
+			;;
+		xfs) fsck_options=
+			fsck_command="xfs_check $fsck_options"
+			;;
+		*) 
+			fsck_options=
+			fsck_command="fsck -t $fstype $fsck_options"
+			;;
+	esac
+	$fsck_command $big_sparse_file >$log 2>$errlog || {
 		bkn_error "Fatal: filesystem check failed."
 		return $false
 	}
 	# Mount filesystem
 	bkn_log "Mount filesystem..."
-    mount $mount_options_bsf \
+    bkn_mount_helper -t $fstype \
+		$mount_options_bsf \
 		$loop_dev \
 		$mount_point_bsf
 	return $?
@@ -347,7 +439,7 @@ bkn_mount_bsf() {
 
 bkn_umount_bsf() {
 	sync
-	umount $mount_point_bsf
+	bkn_umount_helper $mount_point_bsf
 	return $?
 }
 
@@ -358,22 +450,31 @@ bkn_create_big_sparse() {
 
 bkn_check_bsf_is_backup_filesystem() {
 	t=$(file -b $big_sparse_file)
-	case $( echo $t | awk 'BEGIN { fstype="unknown" }
+	fs=$(echo $t | awk 'BEGIN { fstype="unknown" }
 /Linux.*/ { fstype="Linux" }
 /Linux.*ext2/ { fstype="Linux.ext2" }
-END { print fstype }') in
+/XFS[ ]+filesystem/ { fstype="xfs" }
+END { print fstype }')
+	case $fs in
 		Linux) bkn_warn "filesystem identified as 'Linux', but without complete type." ;;
 		Linux.ext2) return $true ;;
-		*) return $false ;;
+		xfs) return $true ;;
+		*) bkn_error "filesystem not known: $fs"; return $false ;;
 	esac
 }
 
 bkn_create_backup_filesystem() {
-    mkfs.$fs_type $loop_dev || bkn_error "creating filesystem $fs_type on $loop_dev."
+    bkn_mkfs_helper -t $fstype $loop_dev || bkn_error "creating filesystem $fstype on $loop_dev."
 	return $?
 }
 
 bkn_check_backup_filesystem() {
+	case $UID in
+		0) bkn_log "Info: root backup" ;;
+		*) bkn_log "Info: non-root backup (chmod 777 at / in BSF)"
+			sudo chmod 777 "$mount_point_bsf"
+			;;
+	esac
 	if [ -w "$mount_point_bsf" ] ; then
 		u=$(umask)
 		umask 0222
@@ -392,13 +493,13 @@ bkn_check_backup_filesystem() {
 }
 
 bkn_setup_loop_device() {
-    loop_dev=$(losetup -f) # find first unused loop device
-    losetup $loop_dev $big_sparse_file
+    loop_dev=$(bkn_losetup_helper -f) # find first unused loop device
+    bkn_losetup_helper $loop_dev $big_sparse_file
 	return $?
 }
 
 bkn_release_loop_device() {
-	losetup -d $loop_dev
+	bkn_losetup_helper -d $loop_dev
 	return $?
 }
 
@@ -450,6 +551,10 @@ bkn_setup() {
 
 	bkn_verify_task_list
 
+	bkn_log "Verify backup dir ..."
+
+	bkn_check_backupdir
+
 	bkn_log "Test NAS mount point..."
 
 	if [ ! -d $mount_point_nas ] ; then
@@ -461,7 +566,11 @@ bkn_setup() {
 	bkn_log "Current mount point FS type: $mount_point_test_type"
 	
 	if bkn_is_nas_mounted ; then
-		bkn_fatal "NAS already mounted"
+		if [ $ignore_nas_already_mounted -eq $true ] ; then
+			bkn_warn "NAS already mounted at $mount_point_nas"
+		else
+			bkn_fatal "NAS already mounted at $mount_point_nas"
+		fi
 	fi
 	
 	bkn_log "Mount NAS share..."
@@ -570,23 +679,31 @@ bkn_list_backups() {
 ####################
 
 # Command line options & arguments
-myoptions="hdm:A:B:C:N:"
+myoptions="hvdl:b:x:n:cm:A:B:C:N:"
 # Options explained:
 usage() {
 	echo "usage: $me [options]"
 	echo
 	echo "options:"
 	echo
-	echo -e "  h       this help"
+	echo -e "  -h       this help"
 	echo
-	echo -e "  d       debug mode"
+	echo -e "  -v       verbose mode"
+	echo -e "  -d       debug mode"
 	echo
-	echo -e "  m<mode> operation mode: $operation_modes"
+	echo -e "  -l<dir>  log directory"
 	echo
-	echo -e "  A       task A part (name)"
-	echo -e "  B       task B part (sub-name)"
-	echo -e "  C       task C part (sources)"
-	echo -e "  N       NAS hostname"
+	echo -e "  -b<dir>  backup directory"
+	echo -e "  -x<fs>   filesystem in big space file"
+	echo -e "  -n<nfs>  network filesystem to use (smbfs or cifs)"
+	echo -e "  -c       continue even if nas is already mounted"
+	echo
+	echo -e "  -m<mode> operation mode: $operation_modes"
+	echo
+	echo -e "  -A       task A part (name)"
+	echo -e "  -B       task B part (sub-name)"
+	echo -e "  -C       task C part (sources)"
+	echo -e "  -N       NAS hostname"
 	echo
 	exit 0
 }
@@ -597,12 +714,39 @@ usage() {
 while getopts $myoptions o
 do
   case $o in
-	  h )
-		  usage
+	  h ) usage ;;
+
+	  v ) verbose=$true ;;
+	  d ) debug=$true ;;
+
+	  l ) [ -z "$OPTARG" ] && usage
+		  logdir=$OPTARG
+		  if [ -d "$logdir" ] ; then
+			  logdir=$(realpath "$logdir")
+		  else
+			  bkn_fatal "Argument invalid: logdir must be a valid directory"
+		  fi
 		  ;;
-	  d )
-		  debug=$true
+
+	  b ) [ -z "$OPTARG" ] && usage
+		  backupdir=$OPTARG
+		  if [ -d "$backupdir" ] ; then
+			  backupdir=$(realpath "$backupdir")
+		  else
+			  bkn_fatal "Argument invalid: backupdir must be a valid directory"
+		  fi
 		  ;;
+
+	  x ) [ -z "$OPTARG" ] && usage
+		  fstype=$OPTARG
+		  ;;
+
+	  n ) [ -z "$OPTARG" ] && usage
+		  netfstype=$OPTARG
+		  ;;
+
+	  c ) ignore_nas_already_mounted=$true ;;
+
 	  m ) [ -z "$OPTARG" ] && usage
 		  d=$OPTARG
 		  case $d in
@@ -612,24 +756,25 @@ do
 				  usage ;;
 		  esac
 		  ;;
+
       A ) [ -z "$OPTARG" ] && usage
-	  A=$OPTARG
-	  ;;
+		  A=$OPTARG
+		  ;;
       B ) [ -z "$OPTARG" ] && usage
-	  B=$OPTARG
-	  ;;
+		  B=$OPTARG
+		  ;;
       C ) [ -z "$OPTARG" ] && usage
-	  C=$OPTARG
-	  ;;
+		  C=$OPTARG
+		  ;;
       N ) [ -z "$OPTARG" ] && usage
-	  N=$OPTARG
-	  if ping -c1 $N >/dev/null 2>&1 ; then
-		  nas="//$N"
-	  else
-		  bkn_error "can't ping NAS: $N (invalid hostname?)"
-		  exit 1
-	  fi
-	  ;;
+		  N=$OPTARG
+		  if ping -c1 $N >/dev/null 2>&1 ; then
+			  nas="//$N"
+		  else
+			  bkn_error "can't ping NAS: $N (invalid hostname?)"
+			  exit 1
+		  fi
+		  ;;
 	  *) usage
   esac
 done
@@ -670,7 +815,15 @@ case "$mode" in
 		bkn_release
 		exit 0
 		;;
-	*) echo "normal operation..." ;;
+	*) # Nprmal operation
+		echo "$me: normal operation..."
+		ifD {
+			echo "fstype    : $fstype"
+			echo "netfstype : $netfstype"
+			echo "log file  : $log"
+			echo "error log : $errlog"
+		}
+		;;
 esac
 
 bkn_setup
