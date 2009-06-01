@@ -1,7 +1,7 @@
 #!/bin/bash
 # -*- Mode: shell; tab-width: 4; indent-tabs-mode: t; -*-
 #
-# Modified: Mon Jun  1 02:40:33 2009
+# Modified: Mon Jun  1 13:04:21 2009
 #
 # Backup script. See README.
 #
@@ -10,6 +10,19 @@ set -e
 set -a # automatically export all variables & functions
 me=${0##*/}
 mydir=${0%/*}
+
+# Requirement
+require() {
+	if which -a $@ >/dev/null 2>&1 ; then
+		return $true
+	else
+		echo "FATAL: commands required: $*" >&2
+		exit 1
+	fi
+}
+
+export PATH=/sbin:/usr/sbin:$PATH
+require losetup xfs_check realpath gawk
 
 # Constants
 true=0 # shell defaults to opposite
@@ -21,6 +34,7 @@ alias ifD='[ $debug -eq $true ] && '
 alias ifV='[ $verbose -eq $true ] && '
 
 operation_modes="shell|debug|backup_and_debug"
+
 # Upon script installation, this will be set up as ${datadir}
 myres=$(realpath $mydir)
 
@@ -105,19 +119,6 @@ data_not_transfered=
 size=
 sizeeff=
 sizenot=
-
-# Requirement
-require() {
-	if which -a $@ >/dev/null 2>&1 ; then
-		return $true
-	else
-		echo "FATAL: commands required: $*" >&2
-		exit 1
-	fi
-}
-
-export PATH=/sbin:/usr/sbin:$PATH
-require losetup xfs_check realpath
 
 # Root helper functions
 bkn_mkfs_helper() {
@@ -679,7 +680,7 @@ bkn_list_backups() {
 ####################
 
 # Command line options & arguments
-myoptions="hvdl:b:x:n:cm:A:B:C:N:"
+myoptions="hvdl:b:x:Z:n:cm:A:B:C:N:"
 # Options explained:
 usage() {
 	echo "usage: $me [options]"
@@ -692,9 +693,11 @@ usage() {
 	echo -e "  -d       debug mode"
 	echo
 	echo -e "  -l<dir>  log directory"
-	echo
 	echo -e "  -b<dir>  backup directory"
+	echo
 	echo -e "  -x<fs>   filesystem in big space file"
+	echo -e "  -Z<size> size of the big sparse file"
+	echo
 	echo -e "  -n<nfs>  network filesystem to use (smbfs or cifs)"
 	echo -e "  -c       continue even if nas is already mounted"
 	echo
@@ -739,6 +742,29 @@ do
 
 	  x ) [ -z "$OPTARG" ] && usage
 		  fstype=$OPTARG
+		  ;;
+
+	  Z ) [ -z "$OPTARG" ] && usage
+		  bsf_size=$OPTARG
+		  # Validate arg
+		  _val=$(echo $bsf_size | awk 'BEGIN { units["m"]=1; units["g"]=1024; }
+{ r=match($0, /([0-9]+)([mM]*|[gG]+)$/, arr)
+if (r==0) {
+   print "error"
+} else {
+   if (length(arr[2])==0) { arr[2]="m" }
+   u=tolower(arr[2])
+   arr[1] *= units[u]
+   print arr[1]
+}
+}')
+		  ifD echo "_val=$_val"
+		  case $_val in
+			  "error") # awk script outputs error
+				  bkn_fatal "Argument invalid: bsf size must be a number (with optional unit [mM|gG])" ;;
+			  *) bsf_size=$_val
+				  bkn_log "Info: BSF size set to: $bsf_size" ;;
+		  esac
 		  ;;
 
 	  n ) [ -z "$OPTARG" ] && usage
