@@ -1,0 +1,2 @@
+#!/bin/bash
+rsync -ravzi --rsh='ssh' /local/wk/www/secure/debian nipour:/replica/kheb/eana/wk/www/secure/debian
