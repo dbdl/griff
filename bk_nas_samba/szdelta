@@ -1,0 +1,92 @@
+#!/bin/sh
+#
+# Compute the size of a directory, and
+# try to ignore the duplicated inodes.
+#
+
+me=${0##*/}
+
+mode=0
+verbose=0
+dirs=
+myoptions="hv"
+
+usage() {
+    echo "usage: $me [-h] | [-v] ( <dir>| <dir1> <dir2> )"
+    echo
+    echo "-h    this help"
+    echo "-v    verbose operation"
+    echo
+    exit 0
+}
+
+arg_error() {
+    a=$(( $1 - 1 ))
+    shift
+    echo "$me: argument $a error: $*"
+    exit 1
+}
+
+while getopts $myoptions o
+do
+  case $o in
+      h) usage ;;
+      v) verbose=1 ;;
+      *) arg_error $OPTIND $o ;;
+  esac
+done
+
+shift $(($OPTIND - 1))
+
+# operation mode
+case $# in
+    2) mode=0; dir1="$1"; dir2="$2"; dirs="$dir1 $dir2" ;;
+    1) mode=1; dir1="$1"; dir2=""; dirs="$dir1" ;;
+    *) usage ;;
+esac
+
+l_files=$(mktemp)
+sl_files=$(mktemp)
+l_inodes=$(mktemp)
+sl_inodes=$(mktemp)
+
+# list files with their inode
+find $dirs -type f -ls > $l_files
+
+# sum of all files
+sz=$(cat $l_files | awk '{sum+=$7}
+END { print sum }')
+
+# extract inodes
+cat $l_files | awk '{print $1}' > $l_inodes
+
+# sort uniq inodes
+cat $l_inodes | sort -u > $sl_inodes
+
+# for each inode fetch the complete line, but only the first match
+for i in $(cat $sl_inodes|xargs); do grep -m1 "^$i[ \t]" $l_files >> $sl_files; done
+
+# for each line sum up the file size
+sz2=$(cat $sl_files | awk '{sum+=$7}
+END { print sum }')
+
+rm -f $l_files $sl_files $l_inodes $sl_inodes 
+
+delta=$(( $sz - $sz2 ))
+
+case $mode in
+    0) # two directories compared
+	if [ $verbose -eq 0 ] ; then
+	    echo $dir1";"$sz";"$dir2";"$sz2";"$delta
+	else
+	    : # TODO
+	fi
+	;;
+    1) # one directory with duplicated inodes substracted
+	if [ $verbose -eq 0 ] ; then
+	    echo $dirs";"$sz";"$sz2";"$delta
+	else
+	    : # TODO
+	fi
+	;;
+esac

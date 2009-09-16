@@ -1,5 +1,16 @@
 * Mandatory TODO:
 
+** Setup
+
+ - site configuration + per user configuration
+
+  /etc/bknas.conf
+  ~/.bknas
+
+ - configuration variables
+
+  . to be defined .
+
 ** Command line options
 
 backup:
@@ -33,3 +44,5 @@ restore:
   * Disk usage for one delta backup
 
 	Basic idea: find -ls|awk
+   
+	Count files with different inode and sum their size.
